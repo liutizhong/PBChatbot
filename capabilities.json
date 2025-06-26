@@ -1,0 +1,37 @@
+{
+    "privileges": [],
+    "objects": {
+        "apiSettings": {
+            "displayName": "API 设置",
+            "properties": {
+                "apiUrl": {
+                    "displayName": "API Gateway URL",
+                    "type": {
+                        "text": true
+                    }
+                },
+                "apiKey": {
+                    "displayName": "API 密钥",
+                    "type": {
+                        "text": true
+                    }
+                },
+                "authType": {
+                    "displayName": "认证类型",
+                    "type": {
+                        "enumeration": [
+                            {
+                                "displayName": "Bearer Token",
+                                "value": "Bearer"
+                            },
+                            {
+                                "displayName": "API Key",
+                                "value": "ApiKey"
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }
+}

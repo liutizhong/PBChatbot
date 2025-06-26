@@ -1,0 +1,24 @@
+{
+    "visual": {
+        "name": "awschatbotvisual",
+        "displayName": "AWS API Gateway Chatbot",
+        "guid": "awschatbotvisual123",
+        "visualClassName": "Visual",
+        "version": "2.0.0.0",
+        "description": "A chatbot visual that connects to AWS API Gateway with authentication support",
+        "supportUrl": "https://www.baidu.com/support",
+        "gitHubUrl": "https://github.com/yourusername/awschatbotvisual"
+    },
+    "apiVersion": "5.3.0",
+    "author": {
+        "name": "Tizhong Liu",
+        "email": "tizhongliu@example.com"
+    },
+    "assets": {
+        "icon": "assets/icon.png"
+    },
+    "style": "style/visual.less",
+    "capabilities": "capabilities.json",
+    "dependencies": null,
+    "visualHost": "https://app.powerbi.com"
+}
