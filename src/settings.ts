@@ -54,10 +54,11 @@ class ApiSettingsCard extends FormattingSettingsCard {
         name: "authType",
         displayName: "认证类型",
         items: [
+            { displayName: "无认证", value: "None" },
             { displayName: "Bearer Token", value: "Bearer" },
             { displayName: "API Key", value: "ApiKey" }
         ],
-        value: { displayName: "Bearer Token", value: "Bearer" }
+        value: { displayName: "无认证", value: "None" }
     });
 
     name: string = "apiSettings";

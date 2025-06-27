@@ -21,6 +21,10 @@
                     "type": {
                         "enumeration": [
                             {
+                                "displayName": "无认证",
+                                "value": "None"
+                            },
+                            {
                                 "displayName": "Bearer Token",
                                 "value": "Bearer"
                             },
