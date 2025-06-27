@@ -93,15 +93,8 @@ export class Visual implements IVisual {
         this.sendButton.className = "send-button";
         this.sendButton.textContent = "发送";
         
-        // 创建测试连接按钮
-        const testButton = document.createElement("button");
-        testButton.className = "test-button";
-        testButton.textContent = "测试连接";
-        testButton.title = "测试API连接";
-        
         // 绑定事件
         this.sendButton.addEventListener("click", () => this.sendMessage());
-        testButton.addEventListener("click", () => this.testConnection());
         this.messageInput.addEventListener("keypress", (e) => {
             if (e.key === "Enter") {
                 this.sendMessage();
@@ -110,16 +103,97 @@ export class Visual implements IVisual {
         
         // 组装界面
         this.inputContainer.appendChild(this.messageInput);
-        this.inputContainer.appendChild(testButton);
         this.inputContainer.appendChild(this.sendButton);
         this.chatContainer.appendChild(this.messagesContainer);
         this.chatContainer.appendChild(this.inputContainer);
         this.target.appendChild(this.chatContainer);
-        
-        // 添加欢迎消息
-        this.addMessage("您好！我是您的AI助手，有什么可以帮助您的吗？", false);
-        this.addMessage("💡 提示：如果遇到连接问题，请点击'测试连接'按钮进行诊断。", false);
-        this.addMessage("🔧 配置提示：支持无认证、Bearer Token和API Key三种认证方式。", false);
+    }
+
+    private async handleStreamResponse(response: Response, messageId?: string): Promise<string> {
+        const reader = response.body?.getReader();
+        if (!reader) {
+            throw new Error("无法读取流式响应");
+        }
+
+        // 移除加载动画，开始流式处理
+        if (messageId) {
+            this.removeStreamingEffect(messageId);
+            this.updateMessage(messageId, ""); // 清空占位文本
+        }
+
+        const decoder = new TextDecoder();
+        let fullResponse = "";
+        let buffer = "";
+        let isFirstChunk = true;
+
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                
+                if (done) {
+                    break;
+                }
+
+                // 解码数据块
+                buffer += decoder.decode(value, { stream: true });
+                
+                // 处理完整的事件行
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || ""; // 保留不完整的行
+
+                for (const line of lines) {
+                    if (line.trim() === "") continue;
+                    
+                    // 处理Server-Sent Events格式
+                    if (line.startsWith("data: ")) {
+                        const data = line.slice(6); // 移除"data: "前缀
+                        
+                        if (data === "[DONE]") {
+                            // 流结束标记
+                            break;
+                        }
+                        
+                        try {
+                            const parsed = JSON.parse(data);
+                            const content = parsed.choices?.[0]?.delta?.content || 
+                                          parsed.content || 
+                                          parsed.text || 
+                                          parsed.message || "";
+                            
+                            if (content) {
+                                 fullResponse += content;
+                                 
+                                 // 实时更新UI（如果提供了messageId）
+                                 if (messageId) {
+                                     // 第一次收到内容时开始打字效果
+                                     if (isFirstChunk) {
+                                         isFirstChunk = false;
+                                     }
+                                     this.updateMessageWithTyping(messageId, fullResponse);
+                                 }
+                             }
+                        } catch (parseError) {
+                            // 如果不是JSON格式，直接作为文本处理
+                             if (data.trim()) {
+                                 fullResponse += data;
+                                 if (messageId) {
+                                     this.updateMessageWithTyping(messageId, fullResponse);
+                                 }
+                             }
+                        }
+                    }
+                }
+            }
+        } finally {
+            reader.releaseLock();
+            
+            // 完成打字效果
+            if (messageId && fullResponse) {
+                this.finishTyping(messageId, fullResponse);
+            }
+        }
+
+        return fullResponse || "收到空响应";
     }
 
     private async sendMessage(): Promise<void> {
@@ -130,86 +204,35 @@ export class Visual implements IVisual {
         this.addMessage(messageText, true);
         this.messageInput.value = "";
         
-        // 显示加载状态
-        const loadingId = this.addMessage("正在思考中...", false);
+        // 创建AI回复消息占位符，添加流式加载动画
+        const responseId = this.addMessage("正在连接...", false);
+        this.addStreamingEffect(responseId);
         
         try {
-            // 使用重试机制调用API
-            const response = await this.callApiWithRetry(messageText, 3, loadingId);
+            // 直接调用API，支持流式处理
+            const response = await this.callApi(messageText, responseId);
             
-            // 移除加载消息并添加回复
-            this.removeMessage(loadingId);
-            this.addMessage(response, false);
+            // 如果没有通过流式更新，则更新最终响应
+            if (response && response !== "收到空响应") {
+                this.updateMessage(responseId, response);
+            } else if (response === "收到空响应") {
+                this.updateMessage(responseId, "抱歉，没有收到有效回复，请重试。");
+            }
         } catch (error) {
-            // 移除加载消息并显示错误
-            this.removeMessage(loadingId);
-            
-            // 根据错误类型提供不同的提示
+            // 显示错误信息
             if (error.message.includes("网络连接失败")) {
-                this.addMessage(`❌ 网络连接失败\n\n${error.message}\n\n💡 建议：点击'测试连接'按钮进行详细诊断`, false);
+                this.updateMessage(responseId, "❌ 网络连接失败\n\n" + error.message + "\n\n💡 建议：检查网络连接和API配置");
             } else if (error.message.includes("请求超时")) {
-                this.addMessage(`⏰ 请求超时\n\n${error.message}\n\n💡 建议：检查网络连接或稍后重试`, false);
+                this.updateMessage(responseId, "⏰ 请求超时\n\n" + error.message + "\n\n💡 建议：检查网络连接或稍后重试");
             } else {
-                this.addMessage(`❌ 发生错误：${error.message}\n\n💡 如需帮助，请点击'测试连接'进行诊断`, false);
+                this.updateMessage(responseId, "❌ 发生错误：" + error.message + "\n\n💡 请检查API配置和网络连接");
             }
         }
     }
 
-    private async testPreflightRequest(): Promise<void> {
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 5000);
-            
-            await fetch(this.apiSettings.apiUrl, {
-                method: "OPTIONS",
-                headers: {
-                    "Access-Control-Request-Method": "POST",
-                    "Access-Control-Request-Headers": "Content-Type, Authorization, X-API-Key"
-                },
-                mode: "cors",
-                credentials: "omit",
-                signal: controller.signal
-            });
-            
-            clearTimeout(timeoutId);
-        } catch (error) {
-            // 预检请求失败，但不阻止主请求
-            console.warn("预检请求失败:", error.message);
-        }
-    }
 
-    private getResponseHeadersInfo(response: Response): string {
-        const headers: string[] = [];
-        
-        // 检查重要的CORS头
-        const corsHeaders = [
-            'access-control-allow-origin',
-            'access-control-allow-methods',
-            'access-control-allow-headers',
-            'access-control-allow-credentials'
-        ];
-        
-        corsHeaders.forEach(header => {
-            const value = response.headers.get(header);
-            if (value) {
-                headers.push(`  ${header}: ${value}`);
-            }
-        });
-        
-        // 检查内容类型
-        const contentType = response.headers.get('content-type');
-        if (contentType) {
-            headers.push(`  content-type: ${contentType}`);
-        }
-        
-        // 检查服务器信息
-        const server = response.headers.get('server');
-        if (server) {
-            headers.push(`  server: ${server}`);
-        }
-        
-        return headers.length > 0 ? headers.join('\n') : '  无关键响应头信息';
-    }
+
+
 
     private performNetworkDiagnostics(): string {
         const diagnostics: string[] = [];
@@ -248,86 +271,7 @@ export class Visual implements IVisual {
         return diagnostics.join('\n');
     }
 
-    private async testConnection(): Promise<void> {
-        if (!this.apiSettings.apiUrl) {
-            this.addMessage("❌ 请先在设置中配置API URL", false);
-            return;
-        }
 
-        const testId = this.addMessage("🔍 正在测试API连接...", false);
-
-        try {
-            // 首先进行预检请求测试（如果需要）
-            const needsPreflight = this.apiSettings.authType !== "None";
-            if (needsPreflight) {
-                await this.testPreflightRequest();
-            }
-
-            const headers: Record<string, string> = {
-                "Content-Type": "application/json",
-                "Accept": "application/json"
-            };
-
-            // 添加鉴权头
-            if (this.apiSettings.authType !== "None" && this.apiSettings.apiKey) {
-                if (this.apiSettings.authType === "Bearer") {
-                    headers["Authorization"] = `Bearer ${this.apiSettings.apiKey}`;
-                } else if (this.apiSettings.authType === "ApiKey") {
-                    headers["X-API-Key"] = this.apiSettings.apiKey;
-                }
-            }
-
-            const testBody = {
-                message: "连接测试",
-                timestamp: new Date().toISOString(),
-                test: true
-            };
-
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 15000); // 增加到15秒超时
-
-            const response = await fetch(this.apiSettings.apiUrl, {
-                method: "POST",
-                headers: headers,
-                body: JSON.stringify(testBody),
-                mode: "cors",
-                credentials: "omit",
-                signal: controller.signal,
-                cache: "no-cache",
-                redirect: "follow"
-            });
-
-            clearTimeout(timeoutId);
-            this.removeMessage(testId);
-
-            if (response.ok) {
-                const authDisplay = this.apiSettings.authType === "None" ? "无认证" : this.apiSettings.authType;
-                const responseHeaders = this.getResponseHeadersInfo(response);
-                this.addMessage(`✅ 连接测试成功！\n- 状态码: ${response.status}\n- API URL: ${this.apiSettings.apiUrl}\n- 认证方式: ${authDisplay}\n- 响应头信息:\n${responseHeaders}`, false);
-            } else {
-                const errorText = await response.text().catch(() => "无法读取错误信息");
-                const responseHeaders = this.getResponseHeadersInfo(response);
-                this.addMessage(`⚠️ API返回错误:\n- 状态码: ${response.status}\n- 错误信息: ${response.statusText}\n- 详细: ${errorText}\n- 响应头信息:\n${responseHeaders}`, false);
-            }
-
-        } catch (error) {
-            this.removeMessage(testId);
-            
-            if (error.name === "AbortError") {
-                this.addMessage("⏰ 连接超时\n请检查：\n1. API URL是否正确\n2. 网络连接是否正常\n3. API服务是否运行\n4. 服务器响应时间过长", false);
-            } else if (error.message.includes("Failed to fetch")) {
-                // 增强的网络诊断
-                const diagnosticInfo = this.performNetworkDiagnostics();
-                this.addMessage("❌ 网络连接失败\n\n🔍 诊断信息：\n" + diagnosticInfo + "\n\n💡 解决建议：\n1. 检查API URL格式 (必须以https://开头)\n2. 验证API Gateway的CORS配置\n3. 确认PowerBI网络策略允许访问\n4. 检查防火墙和代理设置\n5. 联系API管理员确认服务状态", false);
-            } else if (error.message.includes("CORS")) {
-                this.addMessage("🚫 跨域请求被阻止\n\n解决方案：\n1. 在AWS API Gateway中启用CORS\n2. 添加以下响应头：\n   - Access-Control-Allow-Origin: *\n   - Access-Control-Allow-Methods: POST, OPTIONS\n   - Access-Control-Allow-Headers: Content-Type, Authorization, X-API-Key\n3. 确保处理OPTIONS预检请求\n4. 检查Lambda函数的CORS配置", false);
-            } else if (error.message.includes("TypeError")) {
-                this.addMessage("🔧 请求配置错误\n\n可能原因：\n1. URL格式不正确\n2. 请求头配置问题\n3. 请求体格式错误\n\n请检查API配置", false);
-            } else {
-                this.addMessage("❌ 连接测试失败\n\n错误详情：" + error.message + "\n\n请检查网络连接和API配置", false);
-            }
-        }
-    }
 
     private async callApiWithRetry(message: string, maxRetries: number = 3, loadingId?: string): Promise<string> {
         let lastError: Error;
@@ -361,14 +305,14 @@ export class Visual implements IVisual {
         throw lastError;
     }
 
-    private async callApi(message: string): Promise<string> {
+    private async callApi(message: string, messageId?: string): Promise<string> {
         if (!this.apiSettings.apiUrl) {
             throw new Error("请先配置API URL");
         }
         
         const headers: Record<string, string> = {
             "Content-Type": "application/json",
-            "Accept": "application/json"
+            "Accept": "text/event-stream, application/json"
         };
         
         // 添加鉴权头
@@ -382,12 +326,13 @@ export class Visual implements IVisual {
         
         const requestBody = {
             message: message,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            stream: true // 请求流式响应
         };
         
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 30000); // 30秒超时
+            const timeoutId = setTimeout(() => controller.abort(), 60000); // 增加到60秒超时
             
             const response = await fetch(this.apiSettings.apiUrl, {
                 method: "POST",
@@ -408,12 +353,81 @@ export class Visual implements IVisual {
             }
             
             const contentType = response.headers.get("content-type");
-            if (!contentType || !contentType.includes("application/json")) {
-                throw new Error("API返回的不是JSON格式");
-            }
+            console.log("API响应Content-Type:", contentType);
             
-            const data = await response.json();
-            return data.response || data.message || data.reply || "收到回复，但格式不正确";
+            // 先获取响应文本进行调试
+            const responseText = await response.text();
+            console.log("API响应内容:", responseText);
+            
+            // 检查是否为流式响应
+            if (contentType && contentType.includes("text/event-stream")) {
+                // 重新创建Response对象用于流式处理
+                const newResponse = new Response(responseText, {
+                    status: response.status,
+                    statusText: response.statusText,
+                    headers: response.headers
+                });
+                return await this.handleStreamResponse(newResponse, messageId);
+            } else if (contentType && (contentType.includes("application/json") || contentType.includes("text/plain"))) {
+                // 处理JSON或纯文本响应
+                let data;
+                try {
+                    data = JSON.parse(responseText);
+                } catch (parseError) {
+                    // 如果不是JSON格式，直接作为文本处理
+                    console.log("响应不是JSON格式，作为纯文本处理:", responseText);
+                    
+                    if (messageId) {
+                        this.removeStreamingEffect(messageId);
+                        this.updateMessage(messageId, "");
+                        await this.simulateTypingEffect(messageId, responseText);
+                    }
+                    
+                    return responseText;
+                }
+                
+                // 处理JSON响应
+                console.log("解析后的JSON数据:", data);
+                
+                // 检查多种可能的响应格式
+                if (data.statusCode === 200 || data.status === 200 || data.success === true) {
+                    const responseContent = data.response || data.message || data.reply || data.content || data.text || "收到回复，但内容为空";
+                    
+                    if (messageId) {
+                        this.removeStreamingEffect(messageId);
+                        this.updateMessage(messageId, "");
+                        await this.simulateTypingEffect(messageId, responseContent);
+                    }
+                    
+                    return responseContent;
+                } else if (data.error || data.statusCode !== 200) {
+                    // 处理错误响应
+                    const errorMessage = data.error || data.message || `API返回错误状态: ${data.statusCode || data.status}`;
+                    throw new Error(errorMessage);
+                } else {
+                    // 尝试直接使用响应内容
+                    const responseContent = data.response || data.message || data.reply || data.content || data.text || JSON.stringify(data);
+                    
+                    if (messageId) {
+                        this.removeStreamingEffect(messageId);
+                        this.updateMessage(messageId, "");
+                        await this.simulateTypingEffect(messageId, responseContent);
+                    }
+                    
+                    return responseContent;
+                }
+            } else {
+                // 未知格式，尝试作为纯文本处理
+                console.log("未知Content-Type，作为纯文本处理:", responseText);
+                
+                if (messageId) {
+                    this.removeStreamingEffect(messageId);
+                    this.updateMessage(messageId, "");
+                    await this.simulateTypingEffect(messageId, responseText);
+                }
+                
+                return responseText || "收到响应，但内容为空";
+            }
             
         } catch (error) {
             if (error.name === "AbortError") {
@@ -428,6 +442,56 @@ export class Visual implements IVisual {
             }
             throw error;
         }
+    }
+
+    private parseMarkdown(text: string): string {
+        if (!text) return "";
+        
+        // 转义HTML特殊字符
+        let html = text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+        
+        // 代码块 (```)
+        html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+        
+        // 行内代码 (`)
+        html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+        
+        // 粗体 (**text** 或 __text__)
+        html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+        
+        // 斜体 (*text* 或 _text_)
+        html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+        html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
+        
+        // 链接 [text](url)
+        html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+        
+        // 标题 (# ## ###)
+        html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+        html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+        html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+        
+        // 无序列表 (- 或 *)
+        html = html.replace(/^[\s]*[-*] (.+)$/gm, '<li>$1</li>');
+        html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+        
+        // 有序列表 (1. 2. 3.)
+        html = html.replace(/^[\s]*\d+\. (.+)$/gm, '<li>$1</li>');
+        
+        // 换行处理
+        html = html.replace(/\n\n/g, '</p><p>');
+        html = html.replace(/\n/g, '<br>');
+        
+        // 包装段落
+        if (html && !html.startsWith('<')) {
+            html = '<p>' + html + '</p>';
+        }
+        
+        return html;
     }
 
     private addMessage(text: string, isUser: boolean): string {
@@ -447,7 +511,13 @@ export class Visual implements IVisual {
         
         const messageContent = document.createElement("div");
         messageContent.className = "message-content";
-        messageContent.textContent = text;
+        
+        // 对于用户消息使用纯文本，对于AI消息使用Markdown解析
+        if (isUser) {
+            messageContent.textContent = text;
+        } else {
+            messageContent.innerHTML = this.parseMarkdown(text);
+        }
         
         const messageTime = document.createElement("div");
         messageTime.className = "message-time";
@@ -463,12 +533,20 @@ export class Visual implements IVisual {
         return messageId;
     }
 
+
+
     private updateMessage(messageId: string, newText: string): void {
         const messageElement = this.messagesContainer.querySelector('[data-id="' + messageId + '"]');
         if (messageElement) {
             const messageContent = messageElement.querySelector('.message-content');
             if (messageContent) {
-                messageContent.textContent = newText;
+                // 检查是否为AI消息（bot-message类）
+                const isAIMessage = messageElement.classList.contains('bot-message');
+                if (isAIMessage) {
+                    messageContent.innerHTML = this.parseMarkdown(newText);
+                } else {
+                    messageContent.textContent = newText;
+                }
             }
         }
         
@@ -478,6 +556,97 @@ export class Visual implements IVisual {
             message.text = newText;
         }
     }
+
+    private updateMessageWithTyping(messageId: string, newText: string): void {
+        const messageElement = this.messagesContainer.querySelector('[data-id="' + messageId + '"]');
+        if (messageElement) {
+            const messageContent = messageElement.querySelector('.message-content');
+            if (messageContent) {
+                // 检查是否为AI消息
+                const isAIMessage = messageElement.classList.contains('bot-message');
+                if (isAIMessage) {
+                    // 对于AI消息，解析Markdown并添加光标
+                    const parsedContent = this.parseMarkdown(newText);
+                    messageContent.innerHTML = parsedContent + '<span class="typing-cursor">▋</span>';
+                } else {
+                    // 对于用户消息，使用纯文本
+                    messageContent.textContent = newText + "▋";
+                }
+                
+                // 添加打字动画类
+                messageElement.classList.add('typing');
+                
+                // 自动滚动到底部
+                this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+            }
+        }
+        
+        // 更新内存中的消息
+        const message = this.messages.find(m => m.id === messageId);
+        if (message) {
+            message.text = newText;
+        }
+    }
+
+    private finishTyping(messageId: string, finalText: string): void {
+        const messageElement = this.messagesContainer.querySelector('[data-id="' + messageId + '"]');
+        if (messageElement) {
+            const messageContent = messageElement.querySelector('.message-content');
+            if (messageContent) {
+                // 检查是否为AI消息
+                const isAIMessage = messageElement.classList.contains('bot-message');
+                if (isAIMessage) {
+                    // 移除光标，显示最终Markdown解析后的文本
+                    messageContent.innerHTML = this.parseMarkdown(finalText);
+                } else {
+                    // 对于用户消息，使用纯文本
+                    messageContent.textContent = finalText;
+                }
+                
+                // 移除所有动画类
+                messageElement.classList.remove('typing', 'streaming');
+            }
+        }
+        
+        // 更新内存中的消息
+        const message = this.messages.find(m => m.id === messageId);
+        if (message) {
+            message.text = finalText;
+        }
+    }
+
+    private addStreamingEffect(messageId: string): void {
+        const messageElement = this.messagesContainer.querySelector('[data-id="' + messageId + '"]');
+        if (messageElement) {
+            messageElement.classList.add('streaming');
+        }
+    }
+
+    private removeStreamingEffect(messageId: string): void {
+        const messageElement = this.messagesContainer.querySelector('[data-id="' + messageId + '"]');
+        if (messageElement) {
+            messageElement.classList.remove('streaming');
+        }
+    }
+
+    private async simulateTypingEffect(messageId: string, text: string): Promise<void> {
+        const words = text.split(' ');
+        let currentText = '';
+        
+        for (let i = 0; i < words.length; i++) {
+            currentText += (i > 0 ? ' ' : '') + words[i];
+            this.updateMessageWithTyping(messageId, currentText);
+            
+            // 控制打字速度，每个词之间延迟50-150ms
+            const delay = Math.random() * 100 + 50;
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
+        
+        // 完成打字效果
+        this.finishTyping(messageId, text);
+    }
+
+
 
     private removeMessage(messageId: string): void {
         const messageElement = this.messagesContainer.querySelector('[data-id="' + messageId + '"]');
@@ -502,9 +671,9 @@ export class Visual implements IVisual {
         return [{
             objectName: "apiSettings",
             properties: {
-                apiUrl: this.apiSettings.apiUrl,
-                apiKey: this.apiSettings.apiKey,
-                authType: this.apiSettings.authType
+                apiUrl: this.apiSettings?.apiUrl ?? "",
+                apiKey: this.apiSettings?.apiKey ?? "",
+                authType: this.apiSettings?.authType ?? "Bearer"
             },
             validValues: {},
             selector: null
