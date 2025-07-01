@@ -1,5 +1,13 @@
 {
-    "privileges": [],
+    "privileges": [
+        {
+            "name": "WebAccess",
+            "essential": true,
+            "parameters": [
+                "https://mmkhxpf2p6u7gjv2tr6xg5irpe0yigny.lambda-url.ap-southeast-1.on.aws/"
+            ]
+        }
+    ],
     "objects": {
         "apiSettings": {
             "displayName": "API 设置",
