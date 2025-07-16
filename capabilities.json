@@ -39,6 +39,55 @@
                             {
                                 "displayName": "API Key",
                                 "value": "ApiKey"
+                            },
+                            {
+                                "displayName": "AWS IAM",
+                                "value": "AWS_IAM"
+                            }
+                        ]
+                    }
+                },
+                "awsAccessKey": {
+                    "displayName": "AWS Access Key ID",
+                    "type": {
+                        "text": true
+                    },
+                    "rule": {
+                        "conditions": [
+                            {
+                                "authType": {
+                                    "in": ["AWS_IAM"]
+                                }
+                            }
+                        ]
+                    }
+                },
+                "awsSecretKey": {
+                    "displayName": "AWS Secret Access Key",
+                    "type": {
+                        "text": true
+                    },
+                    "rule": {
+                        "conditions": [
+                            {
+                                "authType": {
+                                    "in": ["AWS_IAM"]
+                                }
+                            }
+                        ]
+                    }
+                },
+                "awsRegion": {
+                    "displayName": "AWS 区域",
+                    "type": {
+                        "text": true
+                    },
+                    "rule": {
+                        "conditions": [
+                            {
+                                "authType": {
+                                    "in": ["AWS_IAM"]
+                                }
                             }
                         ]
                     }

@@ -56,14 +56,36 @@ class ApiSettingsCard extends FormattingSettingsCard {
         items: [
             { displayName: "无认证", value: "None" },
             { displayName: "Bearer Token", value: "Bearer" },
-            { displayName: "API Key", value: "ApiKey" }
+            { displayName: "API Key", value: "ApiKey" },
+            { displayName: "AWS IAM", value: "AWS_IAM" }
         ],
         value: { displayName: "无认证", value: "None" }
     });
 
+    awsAccessKey = new formattingSettings.TextInput({
+        name: "awsAccessKey",
+        displayName: "AWS Access Key ID",
+        value: "",
+        placeholder: "AKIA..."
+    });
+
+    awsSecretKey = new formattingSettings.TextInput({
+        name: "awsSecretKey",
+        displayName: "AWS Secret Access Key",
+        value: "",
+        placeholder: "输入您的AWS Secret Key"
+    });
+
+    awsRegion = new formattingSettings.TextInput({
+        name: "awsRegion",
+        displayName: "AWS 区域",
+        value: "ap-southeast-1",
+        placeholder: "ap-southeast-1"
+    });
+
     name: string = "apiSettings";
     displayName: string = "API 设置";
-    slices: Array<FormattingSettingsSlice> = [this.apiUrl, this.apiKey, this.authType];
+    slices: Array<FormattingSettingsSlice> = [this.apiUrl, this.apiKey, this.authType, this.awsAccessKey, this.awsSecretKey, this.awsRegion];
 }
 
 /**

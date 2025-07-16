@@ -48,6 +48,9 @@ interface ApiSettings {
     apiUrl: string;
     apiKey: string;
     authType: string;
+    awsAccessKey?: string;
+    awsSecretKey?: string;
+    awsRegion?: string;
 }
 
 export class Visual implements IVisual {
@@ -310,25 +313,51 @@ export class Visual implements IVisual {
             throw new Error("请先配置API URL");
         }
         
+        const requestBody = {
+            message: message,
+            timestamp: new Date().toISOString(),
+            stream: true // 请求流式响应
+        };
+        
         const headers: Record<string, string> = {
             "Content-Type": "application/json",
             "Accept": "text/event-stream, application/json"
         };
         
         // 添加鉴权头
-        if (this.apiSettings.authType !== "None" && this.apiSettings.apiKey) {
+        if (this.apiSettings.authType !== "None") {
             if (this.apiSettings.authType === "Bearer") {
+                if (!this.apiSettings.apiKey) {
+                    throw new Error("请配置Bearer Token密钥");
+                }
                 headers["Authorization"] = `Bearer ${this.apiSettings.apiKey}`;
             } else if (this.apiSettings.authType === "ApiKey") {
+                if (!this.apiSettings.apiKey) {
+                    throw new Error("请配置API密钥");
+                }
                 headers["X-API-Key"] = this.apiSettings.apiKey;
+            } else if (this.apiSettings.authType === "AWS_IAM") {
+                if (!this.apiSettings.awsAccessKey) {
+                    throw new Error("请配置AWS Access Key ID");
+                }
+                if (!this.apiSettings.awsSecretKey) {
+                    throw new Error("请配置AWS Secret Access Key");
+                }
+                if (!this.apiSettings.awsRegion) {
+                    throw new Error("请配置AWS区域");
+                }
+                // AWS IAM 签名认证
+                const awsHeaders = await this.generateAWSSignature(
+                    this.apiSettings.apiUrl,
+                    "POST",
+                    JSON.stringify(requestBody),
+                    this.apiSettings.awsAccessKey,
+                    this.apiSettings.awsSecretKey,
+                    this.apiSettings.awsRegion
+                );
+                Object.assign(headers, awsHeaders);
             }
         }
-        
-        const requestBody = {
-            message: message,
-            timestamp: new Date().toISOString(),
-            stream: true // 请求流式响应
-        };
         
         try {
             const controller = new AbortController();
@@ -646,6 +675,110 @@ export class Visual implements IVisual {
         this.finishTyping(messageId, text);
     }
 
+    private async generateAWSSignature(
+        url: string,
+        method: string,
+        payload: string,
+        accessKey: string,
+        secretKey: string,
+        region: string
+    ): Promise<Record<string, string>> {
+        const urlObj = new URL(url);
+        const host = urlObj.host;
+        const pathname = urlObj.pathname;
+        const service = 'lambda';
+        
+        // 创建时间戳
+        const now = new Date();
+        const amzDate = now.toISOString().replace(/[:\-]|\.\d{3}/g, '');
+        const dateStamp = amzDate.substr(0, 8);
+        
+        // 创建规范请求
+        const canonicalHeaders = `host:${host}\nx-amz-date:${amzDate}\n`;
+        const signedHeaders = 'host;x-amz-date';
+        const payloadHash = await this.sha256(payload);
+        
+        const canonicalRequest = [
+            method,
+            pathname,
+            '', // 查询字符串
+            canonicalHeaders,
+            signedHeaders,
+            payloadHash
+        ].join('\n');
+        
+        // 创建待签名字符串
+        const algorithm = 'AWS4-HMAC-SHA256';
+        const credentialScope = `${dateStamp}/${region}/${service}/aws4_request`;
+        const stringToSign = [
+            algorithm,
+            amzDate,
+            credentialScope,
+            await this.sha256(canonicalRequest)
+        ].join('\n');
+        
+        // 计算签名
+        const signingKey = await this.getSignatureKey(secretKey, dateStamp, region, service);
+        const signature = await this.hmacSha256(signingKey, stringToSign);
+        
+        // 创建授权头
+        const authorizationHeader = [
+            `${algorithm} Credential=${accessKey}/${credentialScope}`,
+            `SignedHeaders=${signedHeaders}`,
+            `Signature=${signature}`
+        ].join(', ');
+        
+        return {
+            'Authorization': authorizationHeader,
+            'X-Amz-Date': amzDate,
+            'X-Amz-Content-Sha256': payloadHash
+        };
+    }
+
+    private async sha256(message: string): Promise<string> {
+        const msgBuffer = new TextEncoder().encode(message);
+        const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    private async hmacSha256(key: ArrayBuffer | Uint8Array, message: string): Promise<string> {
+        const cryptoKey = await crypto.subtle.importKey(
+            'raw',
+            key,
+            { name: 'HMAC', hash: 'SHA-256' },
+            false,
+            ['sign']
+        );
+        const signature = await crypto.subtle.sign('HMAC', cryptoKey, new TextEncoder().encode(message));
+        const hashArray = Array.from(new Uint8Array(signature));
+        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    private async getSignatureKey(
+        secretKey: string,
+        dateStamp: string,
+        region: string,
+        service: string
+    ): Promise<ArrayBuffer> {
+        const kDate = await this.hmacSha256Raw(new TextEncoder().encode(`AWS4${secretKey}`), dateStamp);
+        const kRegion = await this.hmacSha256Raw(kDate, region);
+        const kService = await this.hmacSha256Raw(kRegion, service);
+        const kSigning = await this.hmacSha256Raw(kService, 'aws4_request');
+        return kSigning;
+    }
+
+    private async hmacSha256Raw(key: ArrayBuffer | Uint8Array, message: string): Promise<ArrayBuffer> {
+        const cryptoKey = await crypto.subtle.importKey(
+            'raw',
+            key,
+            { name: 'HMAC', hash: 'SHA-256' },
+            false,
+            ['sign']
+        );
+        return await crypto.subtle.sign('HMAC', cryptoKey, new TextEncoder().encode(message));
+    }
+
 
 
     private removeMessage(messageId: string): void {
@@ -664,6 +797,9 @@ export class Visual implements IVisual {
             this.apiSettings.apiUrl = objects.apiSettings.apiUrl as string || "";
             this.apiSettings.apiKey = objects.apiSettings.apiKey as string || "";
             this.apiSettings.authType = objects.apiSettings.authType as string || "Bearer";
+            this.apiSettings.awsAccessKey = objects.apiSettings.awsAccessKey as string || "";
+            this.apiSettings.awsSecretKey = objects.apiSettings.awsSecretKey as string || "";
+            this.apiSettings.awsRegion = objects.apiSettings.awsRegion as string || "";
         }
     }
 
@@ -673,7 +809,10 @@ export class Visual implements IVisual {
             properties: {
                 apiUrl: this.apiSettings?.apiUrl ?? "",
                 apiKey: this.apiSettings?.apiKey ?? "",
-                authType: this.apiSettings?.authType ?? "Bearer"
+                authType: this.apiSettings?.authType ?? "Bearer",
+                awsAccessKey: this.apiSettings?.awsAccessKey ?? "",
+                awsSecretKey: this.apiSettings?.awsSecretKey ?? "",
+                awsRegion: this.apiSettings?.awsRegion ?? ""
             },
             validValues: {},
             selector: null
